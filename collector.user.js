@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         InPlay Schedule Collector
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Собирает данные о спортивных событиях с api.inplayip.tv и отправляет на указанный сервер
+// @version      1.1
+// @description  Собирает данные о спортивных событиях с api.inplayip.tv
 // @author       Click Clack
 // @match        https://inplayip.tv/*
 // @match        https://api.inplayip.tv/*
@@ -10,7 +10,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
-// @connect      inplayip.net
+// @connect      sportarena.win
 // @connect      api.inplayip.tv
 // @require      https://code.jquery.com/jquery-3.6.0.min.js
 // ==/UserScript==
@@ -22,10 +22,9 @@
     const CONFIG = {
         SOURCE_API: "https://api.inplayip.tv/api/schedule/table",
         TARGET_API: "https://sportarena.win/collector",
-        AUTH_KEY: "Basic " + btoa("inplay:8J9k3aEmertR"),
-        MAX_PAGES: 1, // Сколько дней вперёд проверять
-        CACHE_TTL_HOURS: 24, // Время хранения кэша (в часах)
-        DEBUG: true // Логировать действия в консоль
+        MAX_PAGES: 1,
+        CACHE_TTL_HOURS: 24,
+        DEBUG: true
     };
 
     // Кэширование данных
@@ -41,7 +40,7 @@
             if (entry && (!entry.e || entry.e > Date.now())) {
                 return entry.v;
             }
-            GM_deleteValue(this.PREFIX + key); // Автоочистка просроченного
+            GM_deleteValue(this.PREFIX + key);
             return null;
         }
     };
@@ -49,11 +48,10 @@
     // Логирование
     function log(message, isError = false) {
         if (!CONFIG.DEBUG) return;
-        const style = isError ? "color: red;" : "color: green;";
-        console.log(`%c[InPlay] ${message}`, style);
+        console.log(`[InPlay] ${isError ? 'Ошибка:' : ''} ${message}`);
     }
 
-    // Перехват заголовков из запроса к stream_settings_aliases
+    // Перехват заголовков
     let interceptedHeaders = null;
 
     XMLHttpRequest.prototype.originalOpen = XMLHttpRequest.prototype.open;
@@ -63,14 +61,14 @@
             this.addEventListener('load', () => {
                 if (this.status === 200) {
                     interceptedHeaders = this.headers;
-                    log("Заголовки перехвачены, начинаем сбор данных...");
+                    log("Заголовки перехвачены");
                     fetchAllSchedules();
                 }
             });
         }
     };
 
-    // Сбор данных с пагинацией
+    // Сбор данных
     async function fetchAllSchedules() {
         const allEvents = [];
         for (let day = 0; day < CONFIG.MAX_PAGES; day++) {
@@ -78,15 +76,12 @@
             date.setDate(date.getDate() + day);
             const dateKey = date.toISOString().split('T')[0];
             
-            // Проверка кэша
-            const cachedData = Storage.get(dateKey);
-            if (cachedData) {
-                log(`Данные за ${dateKey} взяты из кэша`);
+            if (const cachedData = Storage.get(dateKey)) {
+                log(`Данные за ${dateKey} из кэша`);
                 allEvents.push(...cachedData);
                 continue;
             }
 
-            // Запрос к API
             const requestBody = {
                 filters: {
                     searchDate: date.toISOString(),
@@ -103,47 +98,41 @@
 
             try {
                 const data = await makeRequest(CONFIG.SOURCE_API, requestBody);
-                if (data && data.length > 0) {
+                if (data?.length > 0) {
                     Storage.set(dateKey, data, CONFIG.CACHE_TTL_HOURS * 3600);
                     allEvents.push(...data);
-                    log(`Данные за ${dateKey} успешно получены`);
                 }
             } catch (error) {
-                log(`Ошибка при запросе за ${dateKey}: ${error.message}`, true);
+                log(`Ошибка запроса: ${error.message}`, true);
             }
         }
 
         if (allEvents.length > 0) {
             sendToTarget(allEvents);
-        } else {
-            log("Нет данных для отправки", true);
         }
     }
 
-    // Отправка данных на целевой сервер
+    // Отправка данных
     function sendToTarget(data) {
         GM_xmlhttpRequest({
             method: "POST",
             url: CONFIG.TARGET_API,
             headers: {
-                "Authorization": CONFIG.AUTH_KEY,
                 "Content-Type": "application/json"
             },
             data: JSON.stringify(data),
-            onload: function(response) {
-                if (response.status === 200) {
-                    log(`Данные успешно отправлены (${data.length} событий)`);
-                } else {
-                    log(`Ошибка отправки: ${response.status}`, true);
-                }
+            onload: (response) => {
+                log(response.status === 200 
+                    ? `Отправлено ${data.length} событий` 
+                    : `Ошибка: ${response.status}`);
             },
-            onerror: function(error) {
+            onerror: (error) => {
                 log(`Ошибка сети: ${error}`, true);
             }
         });
     }
 
-    // Универсальный запрос (для примера, в реальности используйте fetch/GM_xmlhttpRequest)
+    // Универсальный запрос
     function makeRequest(url, body) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -154,17 +143,15 @@
                     "Content-Type": "application/json"
                 },
                 data: JSON.stringify(body),
-                onload: function(response) {
-                    if (response.status === 200) {
-                        resolve(JSON.parse(response.responseText));
-                    } else {
-                        reject(new Error(`HTTP ${response.status}`));
-                    }
+                onload: (response) => {
+                    response.status === 200 
+                        ? resolve(JSON.parse(response.responseText)) 
+                        : reject(new Error(`HTTP ${response.status}`));
                 },
                 onerror: reject
             });
         });
     }
 
-    log("Скрипт инициализирован и ожидает данных...");
+    log("Скрипт активирован");
 })();
