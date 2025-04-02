@@ -1,32 +1,15 @@
 // ==UserScript==
-// @name         Data Collector Script with Install Prompt
+// @name         Data Collector Script
 // @namespace    http://tampermonkey.net/
-// @version      1.1
-// @description  Sends data to a collector and saves it if it's new, with installation prompt
-// @author       Your Name
+// @version      2.0
+// @description  Sends data to a collector and saves it if it's new
+// @author       dev
 // @match        https://inplayip.tv/*
 // @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
 (function() {
     'use strict';
-
-    // Функция для отображения сообщения о необходимости установки скрипта
-    function showInstallPrompt() {
-        const message = "Этот скрипт требует установки. Нажмите 'OK' для продолжения.";
-        if (confirm(message)) {
-            console.log("Скрипт установлен.");
-        } else {
-            console.log("Установка скрипта отменена.");
-            return false; // Отмена установки
-        }
-        return true; // Установка подтверждена
-    }
-
-    // Вызов функции установки при загрузке скрипта
-    if (!showInstallPrompt()) {
-        return; // Прекращаем выполнение, если установка отменена
-    }
 
     // URL коллектора для отправки данных
     const collectorUrl = 'https://sportarena.win/collector/';
