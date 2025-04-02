@@ -11,17 +11,12 @@
 (function() {
     'use strict';
 
-    // URL коллектора для отправки данных
     const collectorUrl = 'https://sportarena.win/collector/';
-
-    // Получение данных из локального хранилища
     const scheduleTable = JSON.parse(localStorage.getItem('scheduleTable'));
 
     if (scheduleTable) {
-        // Проверка на наличие ранее сохранённых данных
         const previousData = JSON.parse(localStorage.getItem('previousData')) || {};
 
-        // Сравнение и отправка данных в коллектор
         if (JSON.stringify(scheduleTable) !== JSON.stringify(previousData)) {
             GM_xmlhttpRequest({
                 method: "POST",
@@ -33,7 +28,6 @@
                 onload: function(response) {
                     if (response.status === 200) {
                         console.log("Data successfully sent to the collector.");
-                        // Сохранение новых данных
                         localStorage.setItem('previousData', JSON.stringify(scheduleTable));
                     } else {
                         console.error(`Error sending data: ${response.status}`);
