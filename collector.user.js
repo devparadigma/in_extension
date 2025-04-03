@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         InPlay Schedule Collector
+// @name         InPlay Schedule Collector (Enhanced)
 // @namespace    https://sportarena.win
-// @version      1.1
-// @description  This script reduces latency of real time streamings offered by Inplay
+// @version      1.2
+// @description  Improved version that captures all required API data
 // @author       Click Clack
 // @match        https://www.inplayip.tv/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=inplayip.tv
@@ -10,110 +10,122 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @connect      api.inplayip.tv
 // @connect      sportarena.win
 // @run-at       document-start
-// @updateURL    https://github.com/devparadigma/in_extension/raw/main/collector.user.js
-// @downloadURL  https://github.com/devparadigma/in_extension/raw/main/collector.user.js
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // Конфигурация
     const CONFIG = {
-        SOURCE_API: "https://api.inplayip.tv/api/schedule/table",
         TARGET_API: "https://sportarena.win/collector",
-        MAX_PAGES: 1,
         CACHE_TTL_HOURS: 1,
         DEBUG: true
     };
 
-    // Кэширование данных
-    const Storage = {
-        PREFIX: "GM_data_",
-        set(key, value, ttlSeconds = null) {
-            const data = { v: value };
-            if (ttlSeconds) data.e = Date.now() + ttlSeconds * 1000;
-            GM_setValue(this.PREFIX + key, data);
-        },
-        get(key) {
-            const entry = GM_getValue(this.PREFIX + key);
-            if (entry && (!entry.e || entry.e > Date.now())) {
-                return entry.v;
-            }
-            GM_deleteValue(this.PREFIX + key);
-            return null;
-        }
+    // Хранилище для перехваченных данных API
+    let apiTemplate = {
+        headers: null,
+        bodyTemplate: null
     };
 
-    // Логирование
-    function log(message, isError = false) {
-        if (!CONFIG.DEBUG) return;
-        console.log(`[InPlay] ${isError ? 'Ошибка:' : ''} ${message}`);
-    }
+    // Перехват всех XHR запросов
+    const originalXHROpen = XMLHttpRequest.prototype.open;
+    const originalXHRSend = XMLHttpRequest.prototype.send;
 
-    // Перехват заголовков
-    let interceptedHeaders = null;
-
-    XMLHttpRequest.prototype.originalOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function(method, url) {
-        this.originalOpen.apply(this, arguments);
-        if (url.includes('stream_settings_aliases')) {
+        this._url = url;
+        originalXHROpen.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.send = function(body) {
+        if (this._url.includes('/api/schedule/table')) {
             this.addEventListener('load', () => {
                 if (this.status === 200) {
-                    interceptedHeaders = this.headers;
-                    log("Заголовки перехвачены");
-                    fetchAllSchedules();
+                    // Сохраняем все заголовки и тело запроса
+                    apiTemplate = {
+                        headers: {
+                            'Authorization': this.getResponseHeader('Authorization'),
+                            'DeviceUuid': this.getResponseHeader('DeviceUuid'),
+                            'Content-Type': 'application/json',
+                            'Origin': 'https://www.inplayip.tv',
+                            'Referer': 'https://www.inplayip.tv/'
+                        },
+                        bodyTemplate: JSON.parse(body)
+                    };
+                    console.log('[InPlay] API template captured', apiTemplate);
+                    fetchSchedule();
                 }
             });
         }
+        originalXHRSend.apply(this, arguments);
     };
 
-    // Сбор данных
-    async function fetchAllSchedules() {
-        const allEvents = [];
-        for (let day = 0; day < CONFIG.MAX_PAGES; day++) {
-            const date = new Date();
-            date.setDate(date.getDate() + day);
-            const dateKey = date.toISOString().split('T')[0];
-            
-            if (const cachedData = Storage.get(dateKey)) {
-                log(`Данные за ${dateKey} из кэша`);
-                allEvents.push(...cachedData);
-                continue;
-            }
-
-            const requestBody = {
-                filters: {
-                    searchDate: date.toISOString(),
-                    searchWord: "",
-                    onlyNew: false,
-                    showVOD: false,
-                    showLive: false,
-                    sportsCriteria: [],
-                    countriesCriteria: [],
-                    servicesCriteria: []
-                },
-                timezoneOffset: 0
-            };
-
-            try {
-                const data = await makeRequest(CONFIG.SOURCE_API, requestBody);
-                if (data?.length > 0) {
-                    Storage.set(dateKey, data, CONFIG.CACHE_TTL_HOURS * 3600);
-                    allEvents.push(...data);
-                }
-            } catch (error) {
-                log(`Ошибка запроса: ${error.message}`, true);
-            }
+    // Получение расписания
+    async function fetchSchedule() {
+        if (!apiTemplate.headers) {
+            console.error('[InPlay] API template not captured yet');
+            return;
         }
 
-        if (allEvents.length > 0) {
-            sendToTarget(allEvents);
+        const dateKey = new Date().toISOString().split('T')[0];
+        const cacheKey = `schedule_${dateKey}`;
+
+        // Проверка кэша
+        if (const cachedData = GM_getValue(cacheKey)) {
+            console.log('[InPlay] Using cached data');
+            sendToTarget(cachedData);
+            return;
+        }
+
+        // Подготовка тела запроса
+        const requestBody = {
+            ...apiTemplate.bodyTemplate,
+            filters: {
+                ...apiTemplate.bodyTemplate.filters,
+                searchDate: new Date().toISOString(),
+                showLive: true
+            }
+        };
+
+        try {
+            const data = await makeRequest(
+                'https://api.inplayip.tv/api/schedule/table',
+                apiTemplate.headers,
+                requestBody
+            );
+
+            if (data?.length > 0) {
+                GM_setValue(cacheKey, data, CONFIG.CACHE_TTL_HOURS * 3600);
+                sendToTarget(data);
+            }
+        } catch (error) {
+            console.error('[InPlay] API Error:', error);
         }
     }
 
-    // Отправка данных
+    // Универсальный запрос
+    function makeRequest(url, headers, body) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: "POST",
+                url: url,
+                headers: headers,
+                data: JSON.stringify(body),
+                onload: (response) => {
+                    if (response.status === 200) {
+                        resolve(JSON.parse(response.responseText));
+                    } else {
+                        reject(new Error(`HTTP ${response.status}`));
+                    }
+                },
+                onerror: reject
+            });
+        });
+    }
+
+    // Отправка на целевой сервер
     function sendToTarget(data) {
         GM_xmlhttpRequest({
             method: "POST",
@@ -123,36 +135,10 @@
             },
             data: JSON.stringify(data),
             onload: (response) => {
-                log(response.status === 200 
-                    ? `Отправлено ${data.length} событий` 
-                    : `Ошибка: ${response.status}`);
-            },
-            onerror: (error) => {
-                log(`Ошибка сети: ${error}`, true);
+                console.log(`[InPlay] Data sent (${data.length} items)`);
             }
         });
     }
 
-    // Универсальный запрос
-    function makeRequest(url, body) {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: "POST",
-                url: url,
-                headers: {
-                    ...interceptedHeaders,
-                    "Content-Type": "application/json"
-                },
-                data: JSON.stringify(body),
-                onload: (response) => {
-                    response.status === 200 
-                        ? resolve(JSON.parse(response.responseText)) 
-                        : reject(new Error(`HTTP ${response.status}`));
-                },
-                onerror: reject
-            });
-        });
-    }
-
-    log("Скрипт активирован");
+    console.log('[InPlay] Script initialized');
 })();
