@@ -1,16 +1,16 @@
 // ==UserScript==
 // @name         InPlay Schedule Collector
-// @namespace    http://tampermonkey.net/
+// @namespace    https://sportarena.win
 // @version      1.1
-// @description  Собирает данные о спортивных событиях с api.inplayip.tv
+// @description  This script reduces latency of real time streamings offered by Inplay
 // @author       Click Clack
 // @match        https://www.inplayip.tv/*
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=inplayip.tv
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @connect      sportarena.win
-// @connect      api.inplayip.tv
 // @run-at       document-start
 // @updateURL    https://github.com/devparadigma/in_extension/raw/main/collector.user.js
 // @downloadURL  https://github.com/devparadigma/in_extension/raw/main/collector.user.js
