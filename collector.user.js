@@ -83,7 +83,7 @@
 
     const CONFIG = {
         TARGET_API: "https://sportarena.win/collector",
-        CACHE_TTL_HOURS: 24,
+        CACHE_TTL_HOURS: 1,
         MAX_RETRIES: 3,
         RETRY_DELAY: 1000,
         DEBUG: true
