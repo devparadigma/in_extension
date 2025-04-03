@@ -4,7 +4,7 @@
 // @version      1.1
 // @description  Собирает данные о спортивных событиях с api.inplayip.tv
 // @author       Click Clack
-// @match        https://inplayip.tv/*
+// @match        https://www.inplayip.tv/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
