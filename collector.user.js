@@ -1,277 +1,179 @@
 // ==UserScript==
-// @name         InPlay Schedule Collector (Enhanced)
+// @name         InPlay Schedule Collector (Hourly Cache)
 // @namespace    https://sportarena.win
-// @version      1.4
-// @description  Improved version with better caching and request handling
+// @version      1.7
+// @description  Collects schedule data with 1-hour caching
 // @author       Click Clack
 // @match        https://www.inplayip.tv/*
-// @icon         https://www.google.com/s2/favicons?sz=64&domain=inplayip.tv
 // @grant        GM_xmlhttpRequest
-// @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_deleteValue
+// @grant        GM_getValue
 // @connect      api.inplayip.tv
 // @connect      sportarena.win
-// @run-at       document-end
-// @updateURL    https://github.com/devparadigma/in_extension/raw/main/collector.user.js
-// @downloadURL  https://github.com/devparadigma/in_extension/raw/main/collector.user.js
+// @run-at       document-start
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // Улучшенное хранилище с TTL и управлением ключами
-    class AdvancedStorage {
-        constructor() {
-            this.prefix = 'GM_data_';
-            this.keyList = 'GM_dataKeys';
-            // Автоочистка при инициализации
-            this.getKeys().forEach(key => {
-                const entry = this.get(key, {});
-                if (entry.e !== undefined && !this.checkExpiryTime(entry.e)) {
-                    this.delete(key);
-                }
-            });
-        }
-
-        getKeys() {
-            return GM_getValue(this.keyList, []).filter(key => {
-                const entry = GM_getValue(this.prefix + key);
-                return typeof entry === 'object' && entry?.v !== undefined;
-            });
-        }
-
-        set(key, value, ttlSeconds = null) {
-            const entry = { v: value };
-            if (ttlSeconds) entry.e = Date.now() + ttlSeconds * 1000;
-            
-            GM_setValue(this.prefix + key, entry);
-            const keys = this.getKeys();
-            if (!keys.includes(key)) {
-                GM_setValue(this.keyList, [...keys, key]);
-            }
-        }
-
-        get(key, defaultValue = null) {
-            const entry = GM_getValue(this.prefix + key);
-            if (!entry || (entry.e !== undefined && !this.checkExpiryTime(entry.e))) {
-                this.delete(key);
-                return defaultValue;
-            }
-            return entry?.v ?? defaultValue;
-        }
-
-        delete(key) {
-            const keys = this.getKeys().filter(k => k !== key);
-            GM_setValue(this.keyList, keys);
-            GM_deleteValue(this.prefix + key);
-        }
-
-        checkExpiryTime(expiryTimestamp) {
-            return Date.now() < expiryTimestamp;
-        }
-
-        logContents() {
-            console.group('Storage Contents');
-            this.getKeys().forEach(key => {
-                const entry = GM_getValue(this.prefix + key);
-                console.log(`${key}:`, entry);
-            });
-            console.groupEnd();
-        }
-    }
-
+    // Конфигурация
     const CONFIG = {
-        TARGET_API: "https://sportarena.win/collector",
-        CACHE_TTL_HOURS: 1,
-        MAX_RETRIES: 3,
-        RETRY_DELAY: 1000,
-        DEBUG: true
+        DEBUG: true,
+        CACHE_TTL: 3600, // 1 час кэширования (в секундах)
+        API_URL: 'https://api.inplayip.tv/api/schedule/table',
+        HEADERS_URL: 'https://api.inplayip.tv/api/schedule/stream_settings_aliases',
+        TARGET_SERVER: 'https://sportarena.win/collector/index.php'
     };
 
-    const storage = new AdvancedStorage();
-    let apiHeaders = null;
-
-    // Логирование с проверкой режима отладки
+    // Логирование
     function log(message, isError = false) {
         if (!CONFIG.DEBUG) return;
         const method = isError ? console.error : console.log;
-        method(`[InPlay] ${message}`);
+        method(`[InPlay][${new Date().toLocaleTimeString()}] ${message}`);
     }
 
-    // Перехват заголовков API
-    function setupHeaderInterceptor() {
+    // Перехват заголовков
+    let authHeaders = null;
+
+    // Модификация XMLHttpRequest
+    const setupRequestInterceptor = () => {
         const originalOpen = XMLHttpRequest.prototype.open;
+        const originalSend = XMLHttpRequest.prototype.send;
         const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
 
         XMLHttpRequest.prototype.headers = {};
-
         XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
             this.headers[name] = value;
             return originalSetRequestHeader.apply(this, arguments);
         };
 
-        XMLHttpRequest.prototype.open = function() {
-            this.addEventListener('readystatechange', function() {
-                if (this.readyState === 4 && this.status === 200) {
-                    if (this.responseURL.includes('/api/schedule/stream_settings_aliases')) {
-                        apiHeaders = this.headers;
-                        log('API headers captured', apiHeaders);
-                        fetchSchedule();
-                    }
-                }
-            });
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this._method = method;
+            this._url = url;
             return originalOpen.apply(this, arguments);
         };
-    }
 
-    // Запрос с повторными попытками
-    async function makeRequest(url, headers, body, retries = CONFIG.MAX_RETRIES) {
-        try {
-            const response = await new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: "POST",
-                    url: url,
-                    headers: headers,
-                    data: JSON.stringify(body),
-                    onload: resolve,
-                    onerror: reject
+        XMLHttpRequest.prototype.send = function(data) {
+            if (this._url === CONFIG.HEADERS_URL) {
+                this.addEventListener('load', () => {
+                    if (this.status === 200) {
+                        authHeaders = this.headers;
+                        log('Auth headers captured');
+                        processScheduleRequest();
+                    }
                 });
-            });
-
-            if (response.status === 200) {
-                return JSON.parse(response.responseText);
             }
-            throw new Error(`HTTP ${response.status}`);
-        } catch (error) {
-            if (retries > 0) {
-                log(`Retrying... (${retries} attempts left)`);
-                await new Promise(resolve => setTimeout(resolve, CONFIG.RETRY_DELAY));
-                return makeRequest(url, headers, body, retries - 1);
-            }
-            throw error;
-        }
-    }
+            return originalSend.apply(this, arguments);
+        };
+    };
 
-    // Загрузка данных за несколько дней
-    async function fetchMultipleDays(daysToFetch) {
-        const results = [];
-        const currentDate = new Date();
+    // Проверка необходимости обновления данных
+    const shouldFetchNewData = () => {
+        const lastFetchTime = GM_getValue('lastFetchTime', 0);
+        const now = Math.floor(Date.now() / 1000);
+        return (now - lastFetchTime) > CONFIG.CACHE_TTL;
+    };
 
-        for (let i = 0; i < daysToFetch; i++) {
-            const date = new Date(currentDate);
-            date.setDate(date.getDate() + i);
-            const dateKey = date.toISOString().split('T')[0];
-            const cacheKey = `schedule_${dateKey}`;
-
-            // Проверка кэша
-            const cachedData = storage.get(cacheKey);
-            if (cachedData) {
-                log(`Using cached data for ${dateKey}`);
-                results.push(...cachedData);
-                continue;
-            }
-
-            try {
-                const requestBody = {
-                    filters: {
-                        searchDate: date.toISOString(),
-                        searchWord: "",
-                        onlyNew: false,
-                        showVOD: false,
-                        showLive: true,
-                        sportsCriteria: [],
-                        countriesCriteria: [],
-                        servicesCriteria: []
-                    },
-                    timezoneOffset: 0
-                };
-
-                const data = await makeRequest(
-                    'https://api.inplayip.tv/api/schedule/table',
-                    apiHeaders,
-                    requestBody
-                );
-
-                if (data?.length > 0) {
-                    storage.set(cacheKey, data, CONFIG.CACHE_TTL_HOURS * 3600);
-                    results.push(...data);
-                }
-            } catch (error) {
-                log(`Failed to fetch data for ${dateKey}: ${error.message}`, true);
-            }
-        }
-
-        return results;
-    }
-
-    // Отправка данных на целевой сервер
-    function sendToTarget(data) {
-        if (!data || data.length === 0) {
-            log('No data to send', true);
+    // Основная логика обработки расписания
+    const processScheduleRequest = async () => {
+        if (!authHeaders) {
+            log('Auth headers not available', true);
             return;
         }
 
+        const useCache = !shouldFetchNewData();
+        const cachedData = GM_getValue('cachedSchedule');
+
+        if (useCache && cachedData) {
+            log(`Using cached data (next update in ${getTimeUntilNextFetch()} minutes)`);
+            return;
+        }
+
+        try {
+            log(useCache ? 'Cache expired, fetching new data' : 'Initial data fetch');
+            const data = await fetchScheduleData();
+            if (data && data.length > 0) {
+                GM_setValue('cachedSchedule', data);
+                GM_setValue('lastFetchTime', Math.floor(Date.now() / 1000));
+                sendToServer(data);
+            }
+        } catch (error) {
+            log(`Error: ${error.message}`, true);
+        }
+    };
+
+    // Получение данных расписания
+    const fetchScheduleData = async () => {
+        const requestBody = {
+            filters: {
+                searchDate: new Date().toISOString(),
+                searchWord: "",
+                onlyNew: false,
+                showVOD: false,
+                showLive: true,
+                sportsCriteria: [],
+                countriesCriteria: [],
+                servicesCriteria: []
+            },
+            timezoneOffset: new Date().getTimezoneOffset()
+        };
+
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: "POST",
+                url: CONFIG.API_URL,
+                headers: authHeaders,
+                data: JSON.stringify(requestBody),
+                onload: function(response) {
+                    if (response.status === 200) {
+                        try {
+                            resolve(JSON.parse(response.responseText));
+                        } catch (e) {
+                            reject(new Error('Invalid JSON response'));
+                        }
+                    } else {
+                        reject(new Error(`HTTP ${response.status}`));
+                    }
+                },
+                onerror: reject
+            });
+        });
+    };
+
+    // Отправка данных на сервер
+    const sendToServer = (data) => {
+        log(`Sending ${data.length} events to server...`);
+        
         GM_xmlhttpRequest({
             method: "POST",
-            url: CONFIG.TARGET_API,
+            url: CONFIG.TARGET_SERVER,
             headers: {
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "X-Data-Source": "InPlay Collector"
             },
             data: JSON.stringify(data),
             onload: function(response) {
-                log(`Data sent (${data.length} items), status: ${response.status}`);
+                if (response.status === 200) {
+                    log('Data successfully sent to server');
+                } else {
+                    log(`Server error: ${response.status}`, true);
+                }
             },
             onerror: function(error) {
-                log(`Failed to send data: ${error}`, true);
+                log(`Failed to send data: ${error.error}`, true);
             }
         });
-    }
+    };
 
-    // Основная функция сбора данных
-    async function fetchSchedule() {
-        if (!apiHeaders) {
-            log('API headers not available yet', true);
-            return;
-        }
-
-        try {
-            const data = await fetchMultipleDays(1);
-            if (data.length > 0) {
-                sendToTarget(data);
-            } else {
-                log('No schedule data found', true);
-            }
-        } catch (error) {
-            log(`Schedule fetch failed: ${error.message}`, true);
-        }
-    }
+    // Вспомогательная функция для расчета времени до следующего обновления
+    const getTimeUntilNextFetch = () => {
+        const lastFetchTime = GM_getValue('lastFetchTime', 0);
+        const now = Math.floor(Date.now() / 1000);
+        const timePassed = now - lastFetchTime;
+        return Math.max(0, Math.floor((CONFIG.CACHE_TTL - timePassed) / 60));
+    };
 
     // Инициализация
-    function init() {
-        setupHeaderInterceptor();
-        log('Script initialized');
-
-        // Периодическая проверка на случай если перехват не сработал
-        let checkCount = 0;
-        const checkInterval = setInterval(() => {
-            if (apiHeaders) {
-                clearInterval(checkInterval);
-                return;
-            }
-            
-            checkCount++;
-            if (checkCount >= 5) {
-                clearInterval(checkInterval);
-                log('Failed to capture API headers after 5 attempts', true);
-            }
-        }, 2000);
-    }
-
-    // Запуск после полной загрузки DOM
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
-    }
+    setupRequestInterceptor();
+    log('Script initialized. Waiting for API calls...');
 })();
