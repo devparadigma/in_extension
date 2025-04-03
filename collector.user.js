@@ -1,9 +1,10 @@
 // ==UserScript==
-// @name         InPlay Schedule Collector (Hourly Cache)
+// @name         InPlay Schedule Collector (Multi-Domain)
 // @namespace    https://sportarena.win
-// @version      1.7
-// @description  Collects schedule data with 1-hour caching
+// @version      1.8
+// @description  Collects schedule data with 1-hour caching for both domains
 // @author       Click Clack
+// @match        https://inplayip.tv/*
 // @match        https://www.inplayip.tv/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -22,14 +23,21 @@
         CACHE_TTL: 3600, // 1 час кэширования (в секундах)
         API_URL: 'https://api.inplayip.tv/api/schedule/table',
         HEADERS_URL: 'https://api.inplayip.tv/api/schedule/stream_settings_aliases',
-        TARGET_SERVER: 'https://sportarena.win/collector/index.php'
+        TARGET_SERVER: 'https://sportarena.win/collector/index.php',
+        ALLOWED_DOMAINS: ['inplayip.tv', 'www.inplayip.tv']
     };
 
-    // Логирование
+    // Проверка допустимого домена
+    const currentDomain = window.location.hostname;
+    if (!CONFIG.ALLOWED_DOMAINS.includes(currentDomain)) {
+        return;
+    }
+
+    // Логирование с указанием домена
     function log(message, isError = false) {
         if (!CONFIG.DEBUG) return;
         const method = isError ? console.error : console.log;
-        method(`[InPlay][${new Date().toLocaleTimeString()}] ${message}`);
+        method(`[InPlay][${currentDomain}][${new Date().toLocaleTimeString()}] ${message}`);
     }
 
     // Перехват заголовков
@@ -149,7 +157,7 @@
             url: CONFIG.TARGET_SERVER,
             headers: {
                 "Content-Type": "application/json",
-                "X-Data-Source": "InPlay Collector"
+                "X-Data-Source": `InPlay Collector (${currentDomain})`
             },
             data: JSON.stringify(data),
             onload: function(response) {
@@ -174,6 +182,6 @@
     };
 
     // Инициализация
+    log(`Script initialized for domain: ${currentDomain}`);
     setupRequestInterceptor();
-    log('Script initialized. Waiting for API calls...');
 })();
