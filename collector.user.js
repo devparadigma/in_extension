@@ -11,7 +11,9 @@
 // @grant        GM_deleteValue
 // @connect      sportarena.win
 // @connect      api.inplayip.tv
-// @require      https://code.jquery.com/jquery-3.6.0.min.js
+// @run-at       document-start
+// @updateURL    https://github.com/devparadigma/in_extension/raw/main/collector.user.js
+// @downloadURL  https://github.com/devparadigma/in_extension/raw/main/collector.user.js
 // ==/UserScript==
 
 (function() {
