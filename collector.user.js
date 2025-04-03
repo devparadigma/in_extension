@@ -236,7 +236,7 @@
         }
 
         try {
-            const data = await fetchMultipleDays(3); // Загружаем данные за 3 дня
+            const data = await fetchMultipleDays(1);
             if (data.length > 0) {
                 sendToTarget(data);
             } else {
