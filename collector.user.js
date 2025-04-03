@@ -13,6 +13,8 @@
 // @connect      api.inplayip.tv
 // @connect      sportarena.win
 // @run-at       document-start
+// @updateURL    https://github.com/devparadigma/in_extension/raw/main/collector.user.js
+// @downloadURL  https://github.com/devparadigma/in_extension/raw/main/collector.user.js
 // ==/UserScript==
 
 (function() {
