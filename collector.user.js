@@ -24,7 +24,7 @@
         SOURCE_API: "https://api.inplayip.tv/api/schedule/table",
         TARGET_API: "https://sportarena.win/collector",
         MAX_PAGES: 1,
-        CACHE_TTL_HOURS: 24,
+        CACHE_TTL_HOURS: 1,
         DEBUG: true
     };
 
