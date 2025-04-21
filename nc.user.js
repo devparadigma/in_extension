@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         InPlay Schedule Collector (Hybrid Auth)
+// @name         InPlay Schedule Collector (Improved Hybrid Auth)
 // @namespace    https://sportarena.win
-// @version      2.3
-// @description  Collects schedule data with dual auth methods
+// @version      2.4
+// @description  Collects schedule data with reliable auth and initial delay
 // @author       Click Clack
 // @match        https://inplayip.tv/*
 // @match        https://www.inplayip.tv/*
@@ -25,7 +25,8 @@
         HEADERS_URL: 'https://api.inplayip.tv/api/schedule/stream_settings_aliases',
         TARGET_SERVER: 'https://sportarena.win/collector/index.php',
         ALLOWED_DOMAINS: ['inplayip.tv', 'www.inplayip.tv'],
-        REFRESH_INTERVAL: 60000
+        REFRESH_INTERVAL: 60000,
+        INITIAL_DELAY: 5000 // 5 секунд задержки перед первым запросом
     };
 
     // Проверка допустимого домена
@@ -45,8 +46,9 @@
     let authToken = null;
     let refreshTimer = null;
     let isInitialFetch = true;
+    let authAttempts = 0;
 
-    // 1. Метод перехвата заголовков из XMLHttpRequest (как в старом скрипте)
+    // 1. Метод перехвата заголовков из XMLHttpRequest
     const setupRequestInterceptor = () => {
         const originalOpen = XMLHttpRequest.prototype.open;
         const originalSend = XMLHttpRequest.prototype.send;
@@ -70,7 +72,8 @@
                     if (this.status === 200) {
                         authHeaders = this.headers;
                         log('Auth headers captured from XHR');
-                        if (isInitialFetch) processScheduleRequest();
+                        authAttempts = 0; // Сброс счетчика попыток
+                        if (isInitialFetch) scheduleInitialRequest();
                     }
                 });
             }
@@ -78,7 +81,7 @@
         };
     };
 
-    // 2. Метод перехвата токена из WebSocket (как в новом скрипте)
+    // 2. Метод перехвата токена из WebSocket
     const setupWebSocketInterceptor = () => {
         const nativeWebSocket = window.WebSocket;
         
@@ -91,13 +94,24 @@
                     if (tokenMatch && tokenMatch[1]) {
                         authToken = tokenMatch[1];
                         log('Auth token captured from WebSocket');
-                        if (isInitialFetch) processScheduleRequest();
+                        authAttempts = 0; // Сброс счетчика попыток
+                        if (isInitialFetch) scheduleInitialRequest();
                     }
                 }
             });
             
             return ws;
         };
+    };
+
+    // Запланировать первый запрос после получения авторизации
+    const scheduleInitialRequest = () => {
+        if (refreshTimer) clearTimeout(refreshTimer);
+        
+        // Даем дополнительное время для завершения всех перехватов
+        refreshTimer = setTimeout(() => {
+            processScheduleRequest();
+        }, 1000);
     };
 
     // Проверка необходимости обновления данных
@@ -110,7 +124,15 @@
     // Основная логика обработки
     const processScheduleRequest = async () => {
         if (!authHeaders && !authToken) {
-            log('No auth data available yet', true);
+            authAttempts++;
+            if (authAttempts <= 3) {
+                log(`No auth data available yet (attempt ${authAttempts}/3)`);
+                refreshTimer = setTimeout(() => {
+                    processScheduleRequest();
+                }, 5000); // Повторная попытка через 5 секунд
+            } else {
+                log('Failed to get auth data after 3 attempts', true);
+            }
             return;
         }
 
@@ -119,6 +141,7 @@
 
         if (useCache && cachedData) {
             log(`Using cached data (next update in ${getTimeUntilNextFetch()} minutes)`);
+            scheduleNextRequest();
             return;
         }
 
@@ -133,6 +156,8 @@
             }
         } catch (error) {
             log(`Error: ${error.message}`, true);
+        } finally {
+            scheduleNextRequest();
         }
     };
 
@@ -208,6 +233,14 @@
         });
     };
 
+    // Запланировать следующий запрос
+    const scheduleNextRequest = () => {
+        if (refreshTimer) clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(() => {
+            processScheduleRequest();
+        }, CONFIG.REFRESH_INTERVAL);
+    };
+
     // Вспомогательная функция
     const getTimeUntilNextFetch = () => {
         const lastFetchTime = GM_getValue('lastFetchTime', 0);
@@ -216,22 +249,15 @@
         return Math.max(0, Math.floor((CONFIG.CACHE_TTL - timePassed) / 60));
     };
 
-    // Запуск периодического обновления
-    const startRefreshCycle = () => {
-        if (refreshTimer) clearTimeout(refreshTimer);
-        
-        processScheduleRequest();
-        
-        refreshTimer = setTimeout(() => {
-            startRefreshCycle();
-        }, CONFIG.REFRESH_INTERVAL);
-    };
-
     // Инициализация
     log(`Script initialized for domain: ${currentDomain}`);
     setupRequestInterceptor();
     setupWebSocketInterceptor();
-    startRefreshCycle();
+    
+    // Задержка перед первым запросом
+    refreshTimer = setTimeout(() => {
+        processScheduleRequest();
+    }, CONFIG.INITIAL_DELAY);
 
     // Очистка
     window.addEventListener('beforeunload', () => {
