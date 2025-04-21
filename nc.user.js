@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         InPlay Schedule Collector (1-minute refresh)
 // @namespace    https://sportarena.win
-// @version      2.0
-// @description  Collects schedule data every minute
+// @version      2.1
+// @description  Collects schedule data every minute with proper auth
 // @author       Click Clack
 // @match        https://inplayip.tv/*
 // @match        https://www.inplayip.tv/*
@@ -21,10 +21,10 @@
     const CONFIG = {
         DEBUG: true,
         API_URL: 'https://api.inplayip.tv/api/schedule/table',
-        HEADERS_URL: 'https://api.inplayip.tv/api/schedule/stream_settings_aliases',
         TARGET_SERVER: 'https://sportarena.win/collector/index.php',
         ALLOWED_DOMAINS: ['inplayip.tv', 'www.inplayip.tv'],
-        REFRESH_INTERVAL: 60000 // 1 минута в миллисекундах
+        REFRESH_INTERVAL: 60000, // 1 минута в миллисекундах
+        AUTH_TOKEN: null // Будет заполнено при инициализации
     };
 
     // Проверка допустимого домена
@@ -40,15 +40,48 @@
         method(`[InPlay][${currentDomain}][${new Date().toLocaleTimeString()}] ${message}`);
     }
 
-    let authHeaders = null;
     let refreshTimer = null;
+
+    // Функция для извлечения токена из WebSocket соединения
+    const extractAuthToken = () => {
+        return new Promise((resolve) => {
+            const originalWebSocket = window.WebSocket;
+            
+            window.WebSocket = function(url, protocols) {
+                const ws = new originalWebSocket(url, protocols);
+                
+                ws.addEventListener('open', () => {
+                    if (url.includes('api.inplayip.tv/api-hub')) {
+                        const tokenMatch = url.match(/access_token=([^&]+)/);
+                        if (tokenMatch && tokenMatch[1]) {
+                            CONFIG.AUTH_TOKEN = tokenMatch[1];
+                            log('Auth token extracted from WebSocket');
+                            resolve();
+                        }
+                    }
+                });
+                
+                return ws;
+            };
+            
+            // Если WebSocket не открывается в течение 5 секунд, продолжаем без токена
+            setTimeout(() => {
+                log('WebSocket not detected, trying without auth token', true);
+                resolve();
+            }, 5000);
+        });
+    };
 
     // Основная функция для получения и отправки данных
     const fetchAndSendData = async () => {
         try {
-            // Если заголовки не получены, получаем их
-            if (!authHeaders) {
-                await fetchAuthHeaders();
+            // Если токен еще не получен, пытаемся его извлечь
+            if (!CONFIG.AUTH_TOKEN) {
+                await extractAuthToken();
+                
+                if (!CONFIG.AUTH_TOKEN) {
+                    log('No auth token available, trying without it');
+                }
             }
 
             log('Fetching fresh data...');
@@ -63,36 +96,7 @@
             }
         } catch (error) {
             log(`Error: ${error.message}`, true);
-            
-            // Попробуем получить заголовки снова при следующей попытке
-            authHeaders = null;
         }
-    };
-
-    // Получение auth headers через прямой запрос
-    const fetchAuthHeaders = () => {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: "GET",
-                url: CONFIG.HEADERS_URL,
-                onload: function(response) {
-                    if (response.status === 200) {
-                        authHeaders = {
-                            'Accept': 'application/json, text/plain, */*',
-                            'Content-Type': 'application/json',
-                            // Добавьте другие необходимые заголовки
-                        };
-                        log('Auth headers obtained');
-                        resolve();
-                    } else {
-                        reject(new Error(`Failed to get auth headers: HTTP ${response.status}`));
-                    }
-                },
-                onerror: function(error) {
-                    reject(new Error(`Failed to get auth headers: ${error.error}`));
-                }
-            });
-        });
     };
 
     // Получение данных расписания
@@ -111,11 +115,21 @@
             timezoneOffset: new Date().getTimezoneOffset()
         };
 
+        const headers = {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json'
+        };
+
+        // Добавляем токен авторизации, если он есть
+        if (CONFIG.AUTH_TOKEN) {
+            headers['Authorization'] = `Bearer ${CONFIG.AUTH_TOKEN}`;
+        }
+
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "POST",
                 url: CONFIG.API_URL,
-                headers: authHeaders,
+                headers: headers,
                 data: JSON.stringify(requestBody),
                 onload: function(response) {
                     if (response.status === 200) {
@@ -125,7 +139,7 @@
                             reject(new Error('Invalid JSON response'));
                         }
                     } else {
-                        reject(new Error(`HTTP ${response.status}`));
+                        reject(new Error(`HTTP ${response.status}: ${response.responseText}`));
                     }
                 },
                 onerror: reject
