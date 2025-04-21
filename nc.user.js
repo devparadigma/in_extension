@@ -1,16 +1,14 @@
 // ==UserScript==
-// @name         InPlay Schedule Collector (1-minute refresh)
+// @name         InPlay Schedule Collector (Hybrid Auth)
 // @namespace    https://sportarena.win
-// @version      2.2
-// @description  Collects schedule data every minute with reliable auth
+// @version      2.3
+// @description  Collects schedule data with dual auth methods
 // @author       Click Clack
 // @match        https://inplayip.tv/*
 // @match        https://www.inplayip.tv/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @grant        GM_addValueChangeListener
-// @grant        GM_removeValueChangeListener
 // @connect      api.inplayip.tv
 // @connect      sportarena.win
 // @run-at       document-start
@@ -22,12 +20,12 @@
     // Конфигурация
     const CONFIG = {
         DEBUG: true,
+        CACHE_TTL: 3600,
         API_URL: 'https://api.inplayip.tv/api/schedule/table',
+        HEADERS_URL: 'https://api.inplayip.tv/api/schedule/stream_settings_aliases',
         TARGET_SERVER: 'https://sportarena.win/collector/index.php',
         ALLOWED_DOMAINS: ['inplayip.tv', 'www.inplayip.tv'],
-        REFRESH_INTERVAL: 60000, // 1 минута в миллисекундах
-        AUTH_TOKEN: null,
-        TOKEN_EXPIRY: 0
+        REFRESH_INTERVAL: 60000
     };
 
     // Проверка допустимого домена
@@ -36,21 +34,52 @@
         return;
     }
 
-    // Логирование с указанием домена
+    // Логирование
     function log(message, isError = false) {
         if (!CONFIG.DEBUG) return;
         const method = isError ? console.error : console.log;
         method(`[InPlay][${currentDomain}][${new Date().toLocaleTimeString()}] ${message}`);
     }
 
+    let authHeaders = null;
+    let authToken = null;
     let refreshTimer = null;
-    let wsInterceptorActive = false;
+    let isInitialFetch = true;
 
-    // Перехватчик WebSocket для получения токена
+    // 1. Метод перехвата заголовков из XMLHttpRequest (как в старом скрипте)
+    const setupRequestInterceptor = () => {
+        const originalOpen = XMLHttpRequest.prototype.open;
+        const originalSend = XMLHttpRequest.prototype.send;
+        const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+
+        XMLHttpRequest.prototype.headers = {};
+        XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+            this.headers[name] = value;
+            return originalSetRequestHeader.apply(this, arguments);
+        };
+
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this._method = method;
+            this._url = url;
+            return originalOpen.apply(this, arguments);
+        };
+
+        XMLHttpRequest.prototype.send = function(data) {
+            if (this._url === CONFIG.HEADERS_URL) {
+                this.addEventListener('load', () => {
+                    if (this.status === 200) {
+                        authHeaders = this.headers;
+                        log('Auth headers captured from XHR');
+                        if (isInitialFetch) processScheduleRequest();
+                    }
+                });
+            }
+            return originalSend.apply(this, arguments);
+        };
+    };
+
+    // 2. Метод перехвата токена из WebSocket (как в новом скрипте)
     const setupWebSocketInterceptor = () => {
-        if (wsInterceptorActive) return;
-        wsInterceptorActive = true;
-
         const nativeWebSocket = window.WebSocket;
         
         window.WebSocket = function(url, protocols) {
@@ -60,11 +89,9 @@
                 if (url.includes('api.inplayip.tv/api-hub')) {
                     const tokenMatch = url.match(/access_token=([^&]+)/);
                     if (tokenMatch && tokenMatch[1]) {
-                        CONFIG.AUTH_TOKEN = tokenMatch[1];
-                        CONFIG.TOKEN_EXPIRY = Date.now() + 3600000; // Токен действителен 1 час
-                        log('Auth token successfully extracted from WebSocket');
-                        GM_setValue('auth_token', CONFIG.AUTH_TOKEN);
-                        GM_setValue('token_expiry', CONFIG.TOKEN_EXPIRY);
+                        authToken = tokenMatch[1];
+                        log('Auth token captured from WebSocket');
+                        if (isInitialFetch) processScheduleRequest();
                     }
                 }
             });
@@ -73,51 +100,39 @@
         };
     };
 
-    // Попытка получить сохраненный токен
-    const loadStoredToken = () => {
-        const storedToken = GM_getValue('auth_token');
-        const expiry = GM_getValue('token_expiry', 0);
-        
-        if (storedToken && expiry > Date.now()) {
-            CONFIG.AUTH_TOKEN = storedToken;
-            CONFIG.TOKEN_EXPIRY = expiry;
-            log('Using stored auth token');
-            return true;
-        }
-        return false;
+    // Проверка необходимости обновления данных
+    const shouldFetchNewData = () => {
+        const lastFetchTime = GM_getValue('lastFetchTime', 0);
+        const now = Math.floor(Date.now() / 1000);
+        return (now - lastFetchTime) > CONFIG.CACHE_TTL;
     };
 
-    // Основная функция для получения и отправки данных
-    const fetchAndSendData = async () => {
-        try {
-            // Если токен не загружен и не получен, пытаемся его получить
-            if (!CONFIG.AUTH_TOKEN && !loadStoredToken()) {
-                setupWebSocketInterceptor();
-                log('Waiting for auth token...');
-                return;
-            }
+    // Основная логика обработки
+    const processScheduleRequest = async () => {
+        if (!authHeaders && !authToken) {
+            log('No auth data available yet', true);
+            return;
+        }
 
-            log('Fetching fresh data...');
+        const useCache = !isInitialFetch && !shouldFetchNewData();
+        const cachedData = GM_getValue('cachedSchedule');
+
+        if (useCache && cachedData) {
+            log(`Using cached data (next update in ${getTimeUntilNextFetch()} minutes)`);
+            return;
+        }
+
+        try {
+            log(isInitialFetch ? 'Initial data fetch' : 'Fetching new data');
             const data = await fetchScheduleData();
-            
             if (data && data.length > 0) {
-                GM_setValue('lastData', JSON.stringify(data));
+                GM_setValue('cachedSchedule', data);
+                GM_setValue('lastFetchTime', Math.floor(Date.now() / 1000));
                 sendToServer(data);
-                log(`Successfully sent ${data.length} events to server`);
-            } else {
-                log('Received empty data set', true);
+                isInitialFetch = false;
             }
         } catch (error) {
             log(`Error: ${error.message}`, true);
-            
-            // Если ошибка 401, сбрасываем токен
-            if (error.message.includes('401')) {
-                CONFIG.AUTH_TOKEN = null;
-                CONFIG.TOKEN_EXPIRY = 0;
-                GM_setValue('auth_token', null);
-                GM_setValue('token_expiry', 0);
-                log('Auth token expired or invalid, resetting...');
-            }
         }
     };
 
@@ -137,13 +152,13 @@
             timezoneOffset: new Date().getTimezoneOffset()
         };
 
-        const headers = {
+        const headers = authHeaders || {
             'Accept': 'application/json, text/plain, */*',
             'Content-Type': 'application/json'
         };
 
-        if (CONFIG.AUTH_TOKEN) {
-            headers['Authorization'] = `Bearer ${CONFIG.AUTH_TOKEN}`;
+        if (authToken) {
+            headers['Authorization'] = `Bearer ${authToken}`;
         }
 
         return new Promise((resolve, reject) => {
@@ -160,7 +175,7 @@
                             reject(new Error('Invalid JSON response'));
                         }
                     } else {
-                        reject(new Error(`HTTP ${response.status}: ${response.responseText}`));
+                        reject(new Error(`HTTP ${response.status}`));
                     }
                 },
                 onerror: reject
@@ -170,6 +185,8 @@
 
     // Отправка данных на сервер
     const sendToServer = (data) => {
+        log(`Sending ${data.length} events to server...`);
+        
         GM_xmlhttpRequest({
             method: "POST",
             url: CONFIG.TARGET_SERVER,
@@ -179,7 +196,9 @@
             },
             data: JSON.stringify(data),
             onload: function(response) {
-                if (response.status !== 200) {
+                if (response.status === 200) {
+                    log('Data successfully sent to server');
+                } else {
                     log(`Server error: ${response.status}`, true);
                 }
             },
@@ -189,17 +208,20 @@
         });
     };
 
+    // Вспомогательная функция
+    const getTimeUntilNextFetch = () => {
+        const lastFetchTime = GM_getValue('lastFetchTime', 0);
+        const now = Math.floor(Date.now() / 1000);
+        const timePassed = now - lastFetchTime;
+        return Math.max(0, Math.floor((CONFIG.CACHE_TTL - timePassed) / 60));
+    };
+
     // Запуск периодического обновления
     const startRefreshCycle = () => {
-        // Остановить предыдущий таймер, если он был
-        if (refreshTimer) {
-            clearTimeout(refreshTimer);
-        }
-
-        // Выполнить запрос данных
-        fetchAndSendData();
-
-        // Установить таймер для следующего обновления
+        if (refreshTimer) clearTimeout(refreshTimer);
+        
+        processScheduleRequest();
+        
         refreshTimer = setTimeout(() => {
             startRefreshCycle();
         }, CONFIG.REFRESH_INTERVAL);
@@ -207,21 +229,12 @@
 
     // Инициализация
     log(`Script initialized for domain: ${currentDomain}`);
-    
-    // Загружаем сохраненный токен при старте
-    loadStoredToken();
-    
-    // Устанавливаем перехватчик WebSocket
+    setupRequestInterceptor();
     setupWebSocketInterceptor();
-    
-    // Запускаем цикл обновления
     startRefreshCycle();
 
-    // Очистка при уничтожении страницы
+    // Очистка
     window.addEventListener('beforeunload', () => {
-        if (refreshTimer) {
-            clearTimeout(refreshTimer);
-        }
-        wsInterceptorActive = false;
+        if (refreshTimer) clearTimeout(refreshTimer);
     });
 })();
