@@ -1,16 +1,14 @@
 // ==UserScript==
-// @name         InPlay Schedule Collector (Multi-Domain) - Auto Refresh
+// @name         InPlay Schedule Collector (1-minute refresh)
 // @namespace    https://sportarena.win
-// @version      1.9
-// @description  Collects schedule data with 1-hour caching for both domains (auto-refreshing)
+// @version      2.0
+// @description  Collects schedule data every minute
 // @author       Click Clack
 // @match        https://inplayip.tv/*
 // @match        https://www.inplayip.tv/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @grant        GM_addValueChangeListener
-// @grant        GM_removeValueChangeListener
 // @connect      api.inplayip.tv
 // @connect      sportarena.win
 // @run-at       document-start
@@ -22,12 +20,11 @@
     // Конфигурация
     const CONFIG = {
         DEBUG: true,
-        CACHE_TTL: 3600, // 1 час кэширования (в секундах)
         API_URL: 'https://api.inplayip.tv/api/schedule/table',
         HEADERS_URL: 'https://api.inplayip.tv/api/schedule/stream_settings_aliases',
         TARGET_SERVER: 'https://sportarena.win/collector/index.php',
         ALLOWED_DOMAINS: ['inplayip.tv', 'www.inplayip.tv'],
-        REFRESH_INTERVAL: 3600000 // 1 час в миллисекундах
+        REFRESH_INTERVAL: 60000 // 1 минута в миллисекундах
     };
 
     // Проверка допустимого домена
@@ -43,34 +40,32 @@
         method(`[InPlay][${currentDomain}][${new Date().toLocaleTimeString()}] ${message}`);
     }
 
-    // Перехват заголовков
     let authHeaders = null;
     let refreshTimer = null;
-    let isInitialFetch = true;
 
-    // Основная функция для получения данных
-    const fetchData = async () => {
+    // Основная функция для получения и отправки данных
+    const fetchAndSendData = async () => {
         try {
-            // Если это первый запрос или заголовки утеряны, получаем их
-            if (isInitialFetch || !authHeaders) {
+            // Если заголовки не получены, получаем их
+            if (!authHeaders) {
                 await fetchAuthHeaders();
             }
 
-            // Проверяем, нужно ли обновлять данные
-            if (isInitialFetch || shouldFetchNewData()) {
-                log(isInitialFetch ? 'Initial data fetch' : 'Cache expired, fetching new data');
-                const data = await fetchScheduleData();
-                if (data && data.length > 0) {
-                    GM_setValue('cachedSchedule', data);
-                    GM_setValue('lastFetchTime', Math.floor(Date.now() / 1000));
-                    sendToServer(data);
-                }
-                isInitialFetch = false;
+            log('Fetching fresh data...');
+            const data = await fetchScheduleData();
+            
+            if (data && data.length > 0) {
+                GM_setValue('lastData', JSON.stringify(data));
+                sendToServer(data);
+                log(`Successfully sent ${data.length} events to server`);
             } else {
-                log(`Using cached data (next update in ${getTimeUntilNextFetch()} minutes)`);
+                log('Received empty data set', true);
             }
         } catch (error) {
             log(`Error: ${error.message}`, true);
+            
+            // Попробуем получить заголовки снова при следующей попытке
+            authHeaders = null;
         }
     };
 
@@ -82,11 +77,10 @@
                 url: CONFIG.HEADERS_URL,
                 onload: function(response) {
                     if (response.status === 200) {
-                        // Сохраняем заголовки, которые использовались в запросе
                         authHeaders = {
                             'Accept': 'application/json, text/plain, */*',
                             'Content-Type': 'application/json',
-                            // Добавьте другие необходимые заголовки, если они известны
+                            // Добавьте другие необходимые заголовки
                         };
                         log('Auth headers obtained');
                         resolve();
@@ -99,13 +93,6 @@
                 }
             });
         });
-    };
-
-    // Проверка необходимости обновления данных
-    const shouldFetchNewData = () => {
-        const lastFetchTime = GM_getValue('lastFetchTime', 0);
-        const now = Math.floor(Date.now() / 1000);
-        return (now - lastFetchTime) > CONFIG.CACHE_TTL;
     };
 
     // Получение данных расписания
@@ -148,8 +135,6 @@
 
     // Отправка данных на сервер
     const sendToServer = (data) => {
-        log(`Sending ${data.length} events to server...`);
-        
         GM_xmlhttpRequest({
             method: "POST",
             url: CONFIG.TARGET_SERVER,
@@ -159,9 +144,7 @@
             },
             data: JSON.stringify(data),
             onload: function(response) {
-                if (response.status === 200) {
-                    log('Data successfully sent to server');
-                } else {
+                if (response.status !== 200) {
                     log(`Server error: ${response.status}`, true);
                 }
             },
@@ -169,14 +152,6 @@
                 log(`Failed to send data: ${error.error}`, true);
             }
         });
-    };
-
-    // Вспомогательная функция для расчета времени до следующего обновления
-    const getTimeUntilNextFetch = () => {
-        const lastFetchTime = GM_getValue('lastFetchTime', 0);
-        const now = Math.floor(Date.now() / 1000);
-        const timePassed = now - lastFetchTime;
-        return Math.max(0, Math.floor((CONFIG.CACHE_TTL - timePassed) / 60));
     };
 
     // Запуск периодического обновления
@@ -187,7 +162,7 @@
         }
 
         // Выполнить запрос данных
-        fetchData();
+        fetchAndSendData();
 
         // Установить таймер для следующего обновления
         refreshTimer = setTimeout(() => {
@@ -199,7 +174,7 @@
     log(`Script initialized for domain: ${currentDomain}`);
     startRefreshCycle();
 
-    // Очистка при уничтожении страницы (опционально)
+    // Очистка при уничтожении страницы
     window.addEventListener('beforeunload', () => {
         if (refreshTimer) {
             clearTimeout(refreshTimer);
